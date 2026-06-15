@@ -349,36 +349,64 @@ impl FilterOptions {
         }
     }
 
+    pub fn has_any_filter(&self) -> bool {
+        !self.slave_ids.is_empty()
+            || !self.msg_types.is_empty()
+            || !self.fault_codes.is_empty()
+            || !self.commands.is_empty()
+    }
+
     pub fn matches_frame(&self, frame: &EthercatFrame) -> bool {
-        if self.slave_ids.is_empty() && self.msg_types.is_empty() && self.fault_codes.is_empty() && self.commands.is_empty() {
+        if !self.has_any_filter() {
             return true;
         }
         frame.datagrams.iter().any(|dg| self.matches_datagram(dg))
     }
 
     pub fn matches_datagram(&self, dg: &ParsedDatagram) -> bool {
+        // ─── 第 1 层：主维度过滤（AND 关系，必须全部满足）───────────────
+        // slave_ids / commands 属于基础选择维度
         if !self.slave_ids.is_empty() && !self.slave_ids.contains(&dg.header.slave_address) {
             return false;
         }
         if !self.commands.is_empty() && !self.commands.contains(&dg.header.command) {
             return false;
         }
-        if !self.fault_codes.is_empty() {
-            let has_match = dg.is_fault && dg.fault_code.map_or(false, |c| self.fault_codes.contains(&c));
-            if !has_match {
-                return false;
-            }
+
+        // ─── 第 2 层：附加筛选层（OR 关系，满足任意一个即可）─────────────
+        // fault_codes / msg_types 属于"用户想额外看什么"的维度
+        // 规则：
+        //   - 两组都空 → 无需附加筛选，直接通过
+        //   - 只有一组非空 → 必须匹配该组
+        //   - 两组都非空 → (匹配 fault) OR (匹配 msg_type)
+        let has_fault_filter = !self.fault_codes.is_empty();
+        let has_msg_filter = !self.msg_types.is_empty();
+
+        if !has_fault_filter && !has_msg_filter {
+            return true;
         }
-        if !self.msg_types.is_empty() {
-            if let Some(mbox) = &dg.mailbox {
-                if !self.msg_types.contains(&mbox.msg_type) {
-                    return false;
-                }
-            } else {
-                return false;
-            }
+
+        let fault_match = if has_fault_filter {
+            dg.is_fault && dg.fault_code.map_or(false, |c| self.fault_codes.contains(&c))
+        } else {
+            false
+        };
+
+        let msg_match = if has_msg_filter {
+            dg.mailbox
+                .as_ref()
+                .map(|m| self.msg_types.contains(&m.msg_type))
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        match (has_fault_filter, has_msg_filter) {
+            (true, true) => fault_match || msg_match,
+            (true, false) => fault_match,
+            (false, true) => msg_match,
+            (false, false) => true,
         }
-        true
     }
 
     pub fn filter_frame(&self, frame: EthercatFrame) -> Option<EthercatFrame> {
@@ -490,6 +518,218 @@ mod tests {
         let mut f2 = FilterOptions::new();
         f2.slave_ids = vec![2];
         assert!(f2.matches_frame(&frame));
+    }
+
+    fn make_mock_datagram(
+        slave: u16,
+        cmd: EthercatCommand,
+        is_fault: bool,
+        fault_code: Option<u32>,
+        mbox_type: Option<MailboxType>,
+    ) -> ParsedDatagram {
+        ParsedDatagram {
+            header: DatagramHeader {
+                command: cmd,
+                index: 0,
+                slave_address: slave,
+                register_offset: 0,
+                data_length: 4,
+                circulating: false,
+                next: false,
+                irq: 0,
+                working_counter: 1,
+            },
+            data: vec![0u8; 4],
+            mailbox: mbox_type.map(|mt| MailboxMessage {
+                station_address: slave,
+                channel: 0,
+                priority: 0,
+                msg_type: mt,
+                counter: 0,
+                payload: Vec::new(),
+                sdo: None,
+            }),
+            pdo: None,
+            is_fault,
+            fault_code,
+            fault_description: fault_code.map(describe_al_error),
+        }
+    }
+
+    fn make_mock_frame(dgs: Vec<ParsedDatagram>) -> EthercatFrame {
+        EthercatFrame {
+            timestamp_ns: 123,
+            frame_length: 64,
+            ethernet_dest: [0u8; 6],
+            ethernet_src: [0u8; 6],
+            ethertype: 0x88A4,
+            datagrams: dgs,
+        }
+    }
+
+    #[test]
+    fn test_filter_multi_slave_and_command_and_pass() {
+        // --slave-id 1,3 --command LRW → 应该同时保留 slave1 和 slave3 的 LRW 报文
+        let dgs = vec![
+            make_mock_datagram(1, EthercatCommand::LRW, false, None, None),
+            make_mock_datagram(2, EthercatCommand::LRW, false, None, None),
+            make_mock_datagram(3, EthercatCommand::LRW, false, None, None),
+            make_mock_datagram(1, EthercatCommand::APRD, false, None, None),
+        ];
+        let frame = make_mock_frame(dgs);
+        let mut f = FilterOptions::new();
+        f.slave_ids = vec![1, 3];
+        f.commands = vec![EthercatCommand::LRW];
+        let filtered = f.filter_frame(frame).unwrap();
+        assert_eq!(filtered.datagrams.len(), 2);
+        assert_eq!(filtered.datagrams[0].header.slave_address, 1);
+        assert_eq!(filtered.datagrams[1].header.slave_address, 3);
+    }
+
+    #[test]
+    fn test_filter_slave_plus_fault_or_pass() {
+        // --slave-id 1 --fault-code 0x0011 → 关键修复: 保留 slave1 的正常 PDO + slave1 的故障报文
+        // 旧逻辑会把 slave1 的正常报文因不匹配 fault_code 全过滤掉
+        let dgs = vec![
+            make_mock_datagram(1, EthercatCommand::LRW, false, None, None),
+            make_mock_datagram(1, EthercatCommand::LRW, true, Some(0x0011), None),
+            make_mock_datagram(5, EthercatCommand::LRW, true, Some(0x0011), None),
+        ];
+        let frame = make_mock_frame(dgs);
+        let mut f = FilterOptions::new();
+        f.slave_ids = vec![1];
+        f.fault_codes = vec![0x0011];
+        let filtered = f.filter_frame(frame).unwrap();
+        assert_eq!(
+            filtered.datagrams.len(),
+            2,
+            "slave1 的正常PDO和slave1的故障报文都应保留"
+        );
+        assert!(!filtered.datagrams[0].is_fault);
+        assert!(filtered.datagrams[1].is_fault);
+    }
+
+    #[test]
+    fn test_filter_slave_plus_msg_type_or_pass() {
+        // --slave-id 2 --msg-type CoE → 保留 slave2 的 PDO + slave2 的 CoE
+        // 旧逻辑会把 slave2 的 PDO（无 mailbox）全过滤掉
+        let dgs = vec![
+            make_mock_datagram(2, EthercatCommand::LRW, false, None, None),
+            make_mock_datagram(2, EthercatCommand::LRW, false, None, Some(MailboxType::CoE)),
+            make_mock_datagram(2, EthercatCommand::LRW, false, None, Some(MailboxType::FoE)),
+            make_mock_datagram(9, EthercatCommand::LRW, false, None, Some(MailboxType::CoE)),
+        ];
+        let frame = make_mock_frame(dgs);
+        let mut f = FilterOptions::new();
+        f.slave_ids = vec![2];
+        f.msg_types = vec![MailboxType::CoE];
+        let filtered = f.filter_frame(frame).unwrap();
+        assert_eq!(
+            filtered.datagrams.len(),
+            2,
+            "slave2 的PDO + slave2的CoE 应保留, slave2的FoE和slave9的CoE应排除"
+        );
+        assert!(filtered.datagrams[0].mailbox.is_none());
+        assert_eq!(
+            filtered.datagrams[1].mailbox.as_ref().unwrap().msg_type,
+            MailboxType::CoE
+        );
+    }
+
+    #[test]
+    fn test_filter_fault_plus_msg_type_or_pass() {
+        // --fault-code 0x001A --msg-type FoE → (故障) OR (FoE) 的并集
+        let dgs = vec![
+            make_mock_datagram(1, EthercatCommand::LRW, false, None, None),
+            make_mock_datagram(2, EthercatCommand::LRW, true, Some(0x001A), None),
+            make_mock_datagram(3, EthercatCommand::LRW, false, None, Some(MailboxType::FoE)),
+            make_mock_datagram(4, EthercatCommand::LRW, true, Some(0x001A), Some(MailboxType::FoE)),
+            make_mock_datagram(5, EthercatCommand::LRW, false, None, Some(MailboxType::CoE)),
+        ];
+        let frame = make_mock_frame(dgs);
+        let mut f = FilterOptions::new();
+        f.fault_codes = vec![0x001A];
+        f.msg_types = vec![MailboxType::FoE];
+        let filtered = f.filter_frame(frame).unwrap();
+        assert_eq!(
+            filtered.datagrams.len(),
+            3,
+            "slave2(故障) + slave3(FoE) + slave4(双匹配) 应保留"
+        );
+        assert_eq!(filtered.datagrams[0].header.slave_address, 2);
+        assert_eq!(filtered.datagrams[1].header.slave_address, 3);
+        assert_eq!(filtered.datagrams[2].header.slave_address, 4);
+    }
+
+    #[test]
+    fn test_filter_quad_combination() {
+        // --slave-id 1,2,5 --command LRW,APRD --fault-code 0x0011 --msg-type EoE
+        // = (slave ∈ {1,2,5}) AND (cmd ∈ {LRW,APRD}) AND ( fault=0x0011 OR EoE OR 无附加条件=放行 )
+        let dgs = vec![
+            make_mock_datagram(1, EthercatCommand::LRW, false, None, None),
+            make_mock_datagram(1, EthercatCommand::FPRD, false, None, None),
+            make_mock_datagram(2, EthercatCommand::APRD, true, Some(0x0011), None),
+            make_mock_datagram(3, EthercatCommand::LRW, true, Some(0x0011), None),
+            make_mock_datagram(5, EthercatCommand::LRW, false, None, Some(MailboxType::EoE)),
+            make_mock_datagram(5, EthercatCommand::LRW, false, None, Some(MailboxType::CoE)),
+            make_mock_datagram(2, EthercatCommand::LRW, false, None, Some(MailboxType::EoE)),
+        ];
+        let frame = make_mock_frame(dgs);
+        let mut f = FilterOptions::new();
+        f.slave_ids = vec![1, 2, 5];
+        f.commands = vec![EthercatCommand::LRW, EthercatCommand::APRD];
+        f.fault_codes = vec![0x0011];
+        f.msg_types = vec![MailboxType::EoE];
+        let filtered = f.filter_frame(frame).unwrap();
+        let slaves: Vec<u16> = filtered.datagrams.iter().map(|d| d.header.slave_address).collect();
+        // slave1(LRW,PDO) → 主维度通过，附加层 fault+msg 虽都不匹配但 ... 等等，按新逻辑两者都启用时是 OR
+        // 不: --fault-code 和 --msg-type 都传入 → (fault匹配) OR (msg匹配)
+        // slave1 无故障 非 EoE → 附加层不通过 → 被排除
+        // slave1 FPRD → 主维度命令不匹配 → 排除
+        // slave2 APRD 故障0x0011 → 主维度通过 + 附加fault通过 → 保留 ✓
+        // slave3 → slave不匹配 → 排除
+        // slave5 LRW EoE → 主维度通过 + 附加msg通过 → 保留 ✓
+        // slave5 LRW CoE → 附加层不匹配(fault也不匹配) → 排除
+        // slave2 LRW EoE → 主维度通过 + 附加msg通过 → 保留 ✓
+        assert_eq!(
+            filtered.datagrams.len(),
+            3,
+            "应保留 slave2(fault)+slave5(EoE)+slave2(EoE)"
+        );
+        assert_eq!(slaves, vec![2, 5, 2]);
+    }
+
+    #[test]
+    fn test_filter_fault_only_does_not_exclude_normal_when_not_requested() {
+        // 仅 slave_id 过滤时，不带 fault 条件 → 正常报文必须通过
+        // (这是一个回归测试，防止以后重构时引入 AND 回归)
+        let dgs = vec![
+            make_mock_datagram(3, EthercatCommand::LRW, false, None, None),
+            make_mock_datagram(3, EthercatCommand::LRW, false, None, None),
+        ];
+        let frame = make_mock_frame(dgs);
+        let mut f = FilterOptions::new();
+        f.slave_ids = vec![3];
+        let filtered = f.filter_frame(frame).unwrap();
+        assert_eq!(filtered.datagrams.len(), 2);
+    }
+
+    #[test]
+    fn test_filter_has_any_flag() {
+        let f = FilterOptions::new();
+        assert!(!f.has_any_filter());
+        let mut f2 = FilterOptions::new();
+        f2.slave_ids = vec![1];
+        assert!(f2.has_any_filter());
+        let mut f3 = FilterOptions::new();
+        f3.msg_types = vec![MailboxType::CoE];
+        assert!(f3.has_any_filter());
+        let mut f4 = FilterOptions::new();
+        f4.fault_codes = vec![0x0011];
+        assert!(f4.has_any_filter());
+        let mut f5 = FilterOptions::new();
+        f5.commands = vec![EthercatCommand::LRW];
+        assert!(f5.has_any_filter());
     }
 
     #[test]
