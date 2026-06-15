@@ -91,6 +91,154 @@ pub enum Commands {
     Template(TemplateArgs),
     #[command(about = "Generate a sample binary capture file for testing")]
     Generate(GenerateArgs),
+    #[command(about = "Live capture and parse EtherCAT traffic from a network interface")]
+    Live(LiveArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct LiveArgs {
+    #[command(subcommand)]
+    pub action: LiveAction,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LiveAction {
+    #[command(about = "List all available network interfaces")]
+    List,
+    #[command(about = "Start live capture from the specified network interface")]
+    Capture(LiveCaptureArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct LiveCaptureArgs {
+    #[arg(
+        short,
+        long,
+        value_name = "INTERFACE",
+        help = "Network interface name (e.g. eth0, enp0s3, \\Device\\NPF_{...}). Use 'live list' to see available interfaces."
+    )]
+    pub interface: String,
+
+    #[arg(
+        long,
+        default_value_t = true,
+        help = "Enable promiscuous mode (capture all traffic on the segment)"
+    )]
+    pub promiscuous: bool,
+
+    #[arg(
+        long,
+        default_value_t = 65535,
+        help = "Maximum capture packet length (snaplen) in bytes"
+    )]
+    pub snaplen: usize,
+
+    #[arg(
+        long,
+        default_value_t = 16777216,
+        help = "Kernel capture buffer size in bytes (default 16MB)"
+    )]
+    pub buffer_size: usize,
+
+    #[arg(
+        long = "stats-interval",
+        default_value_t = 5000,
+        value_name = "MS",
+        help = "Real-time statistics printing interval in milliseconds (0 = disable)"
+    )]
+    pub stats_interval_ms: u64,
+
+    #[arg(
+        short = 'p',
+        long,
+        help = "Also save raw captured packets to a pcap file for offline replay"
+    )]
+    pub save_pcap: Option<PathBuf>,
+
+    #[arg(
+        short = 't',
+        long,
+        value_name = "TEMPLATE",
+        help = "Register mapping template JSON file (binds registers to business semantics)"
+    )]
+    pub template: Option<PathBuf>,
+
+    #[arg(
+        short = 'o',
+        long,
+        value_name = "FORMAT",
+        default_value_t = OutputFormat::Pretty,
+        help = "Output format: json, table, csv, summary, pretty"
+    )]
+    pub format: OutputFormat,
+
+    #[arg(
+        short = 'f',
+        long = "output-file",
+        value_name = "OUTPUT_FILE",
+        help = "Write parsed output to file instead of stdout"
+    )]
+    pub output_file: Option<PathBuf>,
+
+    #[arg(
+        long = "slave-id",
+        value_name = "ID",
+        value_delimiter = ',',
+        help = "Filter by slave address(es), comma-separated"
+    )]
+    pub slave_ids: Vec<u16>,
+
+    #[arg(
+        long = "msg-type",
+        value_name = "TYPE",
+        value_delimiter = ',',
+        help = "Filter by mailbox message type: CoE,FoE,EoE,SoE,AoE,VoE"
+    )]
+    pub msg_types: Vec<MailboxTypeArg>,
+
+    #[arg(
+        long = "fault-code",
+        value_name = "HEX",
+        value_delimiter = ',',
+        help = "Filter by AL fault code (hex, e.g. 0x0011,0x001A), comma-separated"
+    )]
+    pub fault_codes: Vec<String>,
+
+    #[arg(
+        long = "command",
+        value_name = "CMD",
+        value_delimiter = ',',
+        help = "Filter by EtherCAT command type: LRW,APRD,FPRD,..."
+    )]
+    pub commands: Vec<CommandTypeArg>,
+
+    #[arg(
+        short = 'e',
+        long = "errors-only",
+        help = "Show only frames/datagrams containing faults or errors"
+    )]
+    pub errors_only: bool,
+
+    #[arg(
+        long = "no-color",
+        help = "Disable ANSI color codes in output (for non-TTY environments)"
+    )]
+    pub no_color: bool,
+
+    #[arg(
+        long = "limit",
+        value_name = "N",
+        help = "Stop parsing after N frames (0 = unlimited, run until Ctrl+C)"
+    )]
+    pub limit: Option<u64>,
+
+    #[arg(
+        short = 'v',
+        long = "verbose",
+        action = clap::ArgAction::Count,
+        help = "Increase verbosity (-v, -vv, -vvv)"
+    )]
+    pub verbose: u8,
 }
 
 #[derive(Parser, Debug)]
@@ -265,6 +413,34 @@ pub fn build_filter_options(args: &ParseArgs) -> ethercat_parser::FilterOptions 
         .map(|c| c.to_ethercat_command())
         .collect();
     opts
+}
+
+pub fn build_live_filter_options(args: &LiveCaptureArgs) -> ethercat_parser::FilterOptions {
+    let mut opts = ethercat_parser::FilterOptions::new();
+    opts.slave_ids = args.slave_ids.clone();
+    opts.msg_types = args
+        .msg_types
+        .iter()
+        .map(|t| t.to_mailbox_type())
+        .collect();
+    opts.fault_codes = parse_fault_codes(&args.fault_codes);
+    opts.commands = args
+        .commands
+        .iter()
+        .map(|c| c.to_ethercat_command())
+        .collect();
+    opts
+}
+
+pub fn live_capture_to_capture_opts(args: &LiveCaptureArgs) -> live_capture::CaptureOptions {
+    live_capture::CaptureOptions {
+        interface_name: args.interface.clone(),
+        promiscuous: args.promiscuous,
+        snaplen: args.snaplen,
+        timeout_ms: 10,
+        buffer_size: args.buffer_size,
+        immediate_mode: true,
+    }
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@ pub mod ethercat_parser;
 pub mod pdo_converter;
 pub mod cli;
 pub mod output;
+pub mod live_capture;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

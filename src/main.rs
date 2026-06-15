@@ -2,6 +2,7 @@ use clap::Parser;
 use ethercat_parser::*;
 use std::io::Write;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 mod lib;
 use lib::*;
@@ -22,6 +23,200 @@ fn run() -> anyhow::Result<()> {
         cli::Commands::Parse(parse_args) => cmd_parse(parse_args),
         cli::Commands::Template(tpl_args) => cmd_template(tpl_args),
         cli::Commands::Generate(gen_args) => cmd_generate(gen_args),
+        cli::Commands::Live(live_args) => cmd_live(live_args),
+    }
+}
+
+fn cmd_live(args: cli::LiveArgs) -> anyhow::Result<()> {
+    match args.action {
+        cli::LiveAction::List => cmd_live_list(),
+        cli::LiveAction::Capture(cap_args) => cmd_live_capture(cap_args),
+    }
+}
+
+fn cmd_live_list() -> anyhow::Result<()> {
+    let interfaces = live_capture::list_interfaces()?;
+    if interfaces.is_empty() {
+        println!("No network interfaces found. Ensure you have sufficient privileges (root/Administrator) and libpcap/WinPcap/Npcap is installed.");
+        return Ok(());
+    }
+    println!("Available network interfaces:\n");
+    for (i, iface) in interfaces.iter().enumerate() {
+        let status = if iface.is_up && iface.is_running {
+            "\x1b[32m[UP]\x1b[0m".to_string()
+        } else if iface.is_up {
+            "\x1b[33m[UP-not-running]\x1b[0m".to_string()
+        } else {
+            "\x1b[31m[DOWN]\x1b[0m".to_string()
+        };
+        println!("  [{}] {}  {}", i, status, iface.name);
+        if let Some(desc) = &iface.description {
+            println!("      Description: {}", desc);
+        }
+        for addr in &iface.addresses {
+            println!("      Address:     {}", addr);
+        }
+        println!();
+    }
+    println!("Usage: ethercat-parser live capture -i <interface_name> [options]");
+    Ok(())
+}
+
+fn cmd_live_capture(args: cli::LiveCaptureArgs) -> anyhow::Result<()> {
+    use colored::*;
+    use live_capture::LoopControl;
+    use std::cell::RefCell;
+    use std::time::Duration;
+
+    let mut converter = pdo_converter::PdoConverter::new();
+    if let Some(tpl_path) = &args.template {
+        converter.load_template(tpl_path)?;
+        if args.verbose >= 1 {
+            if let Some(tpl) = converter.get_template() {
+                let mut tmp = output::OutputFormatter::new(
+                    cli::OutputFormat::Pretty,
+                    args.no_color,
+                    None,
+                )?;
+                tmp.print_template_preview(tpl)?;
+            }
+        }
+    }
+
+    let filter = cli::build_live_filter_options(&args);
+    let errors_only = args.errors_only;
+    let mut formatter =
+        output::OutputFormatter::new(args.format, args.no_color, args.output_file.clone())?;
+    formatter.print_csv_header()?;
+    let stats = RefCell::new(ParseStats::default());
+    let frames_parsed = RefCell::new(0u64);
+    let limit = args.limit.unwrap_or(0);
+    let collected_frames = RefCell::new(Vec::<EthercatFrame>::new());
+
+    let cap_opts = cli::live_capture_to_capture_opts(&args);
+    let mut capture = live_capture::LiveCapture::new(&cap_opts)?;
+    if let Some(pcap_path) = &args.save_pcap {
+        capture.enable_savefile(pcap_path)?;
+        println!(
+            "{} {}",
+            if args.no_color { "[INFO]".to_string() } else { "[INFO]".cyan().to_string() },
+            format!("Saving raw packets to: {}", pcap_path.display())
+        );
+    }
+
+    let stop_flag = capture.set_stop_flag();
+    live_capture::register_stop_signal(Arc::clone(&stop_flag));
+
+    let stats_interval = if args.stats_interval_ms > 0 {
+        Duration::from_millis(args.stats_interval_ms)
+    } else {
+        Duration::from_secs(u64::MAX)
+    };
+
+    let no_color = args.no_color;
+    let verbose = args.verbose;
+    let json_output_file = matches!(args.format, cli::OutputFormat::Json) && args.output_file.is_some();
+
+    println!(
+        "{}",
+        if no_color {
+            format!("Starting live capture on '{}'... Press Ctrl+C to stop.", args.interface)
+        } else {
+            format!("{} '{}'... Press Ctrl+C to stop.",
+                "🔴 Capturing on".green().bold(),
+                args.interface.bold()
+            )
+        }
+    );
+
+    let result = live_capture::capture_loop(
+        capture,
+        |raw| {
+            let mut parsed = match ethercat_parser::parse_ethercat_frame(&raw) {
+                Ok(f) => f,
+                Err(e) => {
+                    if verbose >= 2 {
+                        eprintln!("Warning: skipping malformed frame: {}", e);
+                    }
+                    return Ok(LoopControl::Continue);
+                }
+            };
+
+            for dg in parsed.datagrams.iter_mut() {
+                converter.enhance_datagram(dg);
+            }
+
+            let mut stats_ref = stats.borrow_mut();
+            update_stats(&mut stats_ref, &parsed);
+            drop(stats_ref);
+
+            let filtered = if errors_only {
+                let has_error = parsed
+                    .datagrams
+                    .iter()
+                    .any(|d| d.is_fault || d.mailbox.as_ref().and_then(|m| m.sdo.as_ref()).map(|s| s.error_code.is_some()).unwrap_or(false));
+                if !has_error {
+                    None
+                } else {
+                    filter.filter_frame(parsed)
+                }
+            } else {
+                filter.filter_frame(parsed)
+            };
+
+            if let Some(frame) = filtered {
+                if json_output_file {
+                    collected_frames.borrow_mut().push(frame);
+                } else {
+                    formatter.print_frame(&frame, &converter)?;
+                }
+                let mut fp = frames_parsed.borrow_mut();
+                *fp += 1;
+                if limit > 0 && *fp >= limit {
+                    stop_flag.store(true, Ordering::Relaxed);
+                    return Ok(LoopControl::Break);
+                }
+            }
+            Ok(LoopControl::Continue)
+        },
+        stats_interval,
+        |s: &live_capture::LiveStats| {
+            if verbose >= 1 {
+                eprintln!(
+                    "{}  rx={}  ec={}  filtered={}  dropped={}  parse_errors={}",
+                    if no_color { "[STATS]".to_string() } else { "[STATS]".cyan().bold().to_string() },
+                    s.received,
+                    s.ethercat_frames,
+                    s.filtered_count,
+                    s.dropped,
+                    s.parse_errors
+                );
+            }
+        },
+    );
+
+    match result {
+        Ok(final_stats) => {
+            let collected = collected_frames.into_inner();
+            if !collected.is_empty() {
+                formatter.print_json_array(&collected)?;
+            }
+            if matches!(args.format, cli::OutputFormat::Summary | cli::OutputFormat::Pretty) || verbose >= 1 {
+                let final_parse_stats = stats.into_inner();
+                formatter.print_summary(&final_parse_stats)?;
+                println!(
+                    "\n{}  received={}  ethercat_frames={}  dropped={}  if_dropped={}  parse_errors={}",
+                    if no_color { "Capture stopped.".to_string() } else { "🛑 Capture stopped.".yellow().bold().to_string() },
+                    final_stats.received,
+                    final_stats.ethercat_frames,
+                    final_stats.dropped,
+                    final_stats.if_dropped,
+                    final_stats.parse_errors
+                );
+            }
+            Ok(())
+        }
+        Err(e) => Err(e),
     }
 }
 
