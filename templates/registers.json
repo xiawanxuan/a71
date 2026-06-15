@@ -1,0 +1,308 @@
+{
+  "version": "1.0",
+  "production_line": "Assembly-Line-A",
+  "description": "自动化产线A EtherCAT 从站寄存器业务含义绑定模板。涵盖伺服驱动器、I/O模块、温控模块、视觉控制器的关键PDO寄存器映射。",
+  "slaves": [
+    {
+      "slave_id": 1,
+      "device_name": "X-Axis-Servo-Drive",
+      "vendor_id": 2,
+      "product_code": 4097,
+      "registers": [
+        {
+          "index": 28672,
+          "subindex": 1,
+          "name": "Control_Word",
+          "description": "DS402 控制字, 用于控制伺服状态机",
+          "data_type": "uint16",
+          "unit": null,
+          "business_comment": "X轴伺服使能控制位: bit0 SwitchOn, bit1 EnableVoltage, bit2 QuickStop, bit3 EnableOperation"
+        },
+        {
+          "index": 28672,
+          "subindex": 2,
+          "name": "Target_Position",
+          "description": "目标位置, 编码器计数单位",
+          "data_type": "int32",
+          "unit": "count",
+          "business_comment": "X轴目标位置指令, 1 count = 1微米, 行程范围 0 ~ 1200000"
+        },
+        {
+          "index": 28672,
+          "subindex": 3,
+          "name": "Target_Velocity",
+          "description": "目标速度",
+          "data_type": "int32",
+          "unit": "rpm",
+          "business_comment": "X轴目标速度指令, 最大 3000 rpm"
+        },
+        {
+          "index": 28688,
+          "subindex": 1,
+          "name": "Status_Word",
+          "description": "DS402 状态字, 反映伺服状态",
+          "data_type": "uint16",
+          "unit": null,
+          "business_comment": "X轴状态读取: bit5 Fault, bit10 TargetReached, bit11 InternalLimitActive"
+        },
+        {
+          "index": 28688,
+          "subindex": 2,
+          "name": "Actual_Position",
+          "description": "实际位置反馈",
+          "data_type": "int32",
+          "unit": "count",
+          "business_comment": "X轴实际位置, 用于闭环定位监控与报警检查"
+        },
+        {
+          "index": 28688,
+          "subindex": 3,
+          "name": "Actual_Velocity",
+          "description": "实际速度反馈",
+          "data_type": "int32",
+          "unit": "rpm",
+          "business_comment": "X轴实际速度, 用于速度环调节与抖动监控"
+        },
+        {
+          "index": 28688,
+          "subindex": 4,
+          "name": "Actual_Torque",
+          "description": "实际力矩百分比",
+          "data_type": "int16",
+          "unit": "0.1%",
+          "business_comment": "X轴电机负载, 持续>80%应检查机械磨损"
+        }
+      ]
+    },
+    {
+      "slave_id": 2,
+      "device_name": "Y-Axis-Servo-Drive",
+      "vendor_id": 2,
+      "product_code": 4098,
+      "registers": [
+        {
+          "index": 28672,
+          "subindex": 1,
+          "name": "Control_Word",
+          "description": "DS402 控制字",
+          "data_type": "uint16",
+          "unit": null,
+          "business_comment": "Y轴伺服使能控制位"
+        },
+        {
+          "index": 28672,
+          "subindex": 2,
+          "name": "Target_Position",
+          "description": "目标位置, 编码器计数单位",
+          "data_type": "int32",
+          "unit": "count",
+          "business_comment": "Y轴目标位置指令, 1 count = 1微米, 行程范围 0 ~ 800000"
+        },
+        {
+          "index": 28672,
+          "subindex": 3,
+          "name": "Target_Velocity",
+          "description": "目标速度",
+          "data_type": "int32",
+          "unit": "rpm",
+          "business_comment": "Y轴目标速度指令"
+        },
+        {
+          "index": 28688,
+          "subindex": 1,
+          "name": "Status_Word",
+          "description": "DS402 状态字",
+          "data_type": "uint16",
+          "unit": null,
+          "business_comment": "Y轴状态读取"
+        },
+        {
+          "index": 28688,
+          "subindex": 2,
+          "name": "Actual_Position",
+          "description": "实际位置反馈",
+          "data_type": "int32",
+          "unit": "count",
+          "business_comment": "Y轴实际位置反馈"
+        },
+        {
+          "index": 28688,
+          "subindex": 3,
+          "name": "Actual_Velocity",
+          "description": "实际速度反馈",
+          "data_type": "int32",
+          "unit": "rpm",
+          "business_comment": "Y轴实际速度反馈"
+        },
+        {
+          "index": 28688,
+          "subindex": 4,
+          "name": "Actual_Torque",
+          "description": "实际力矩百分比",
+          "data_type": "int16",
+          "unit": "0.1%",
+          "business_comment": "Y轴电机负载"
+        }
+      ]
+    },
+    {
+      "slave_id": 3,
+      "device_name": "IO-Module-Conveyor",
+      "vendor_id": 3,
+      "product_code": 8193,
+      "registers": [
+        {
+          "index": 28672,
+          "subindex": 1,
+          "name": "Digital_Outputs",
+          "description": "数字量输出 32位",
+          "data_type": "uint32",
+          "unit": null,
+          "business_comment": "传送带控制: bit0 主电机启动, bit1 副电机启动, bit8 红灯, bit9 黄灯, bit10 绿灯, bit16 气阀1, bit17 气阀2"
+        },
+        {
+          "index": 28704,
+          "subindex": 1,
+          "name": "Digital_Inputs",
+          "description": "数字量输入 32位",
+          "data_type": "uint32",
+          "unit": null,
+          "business_comment": "传送带传感器: bit0 启动按钮, bit1 停止按钮, bit2 急停, bit8 入口光电, bit9 出口光电, bit10 工件到位, bit16 气压正常"
+        },
+        {
+          "index": 28704,
+          "subindex": 2,
+          "name": "Counter_Products",
+          "description": "工件计数",
+          "data_type": "uint32",
+          "unit": "件",
+          "business_comment": "当日已通过工件数量, 用于产量统计"
+        }
+      ]
+    },
+    {
+      "slave_id": 4,
+      "device_name": "Temperature-Controller",
+      "vendor_id": 4,
+      "product_code": 12289,
+      "registers": [
+        {
+          "index": 28672,
+          "subindex": 1,
+          "name": "Setpoint_Zone1",
+          "description": "温区1设定温度",
+          "data_type": "uint16",
+          "unit": "0.1°C",
+          "business_comment": "回流焊温区1设定, 正常 2500 (=250°C)"
+        },
+        {
+          "index": 28672,
+          "subindex": 2,
+          "name": "Setpoint_Zone2",
+          "description": "温区2设定温度",
+          "data_type": "uint16",
+          "unit": "0.1°C",
+          "business_comment": "回流焊温区2设定, 正常 2650 (=265°C)"
+        },
+        {
+          "index": 28672,
+          "subindex": 3,
+          "name": "Setpoint_Zone3",
+          "description": "温区3设定温度",
+          "data_type": "uint16",
+          "unit": "0.1°C",
+          "business_comment": "回流焊温区3设定, 正常 2550 (=255°C)"
+        },
+        {
+          "index": 28704,
+          "subindex": 1,
+          "name": "Actual_Zone1",
+          "description": "温区1实际温度",
+          "data_type": "uint16",
+          "unit": "0.1°C",
+          "business_comment": "温区1实际测温, 允许偏差±10°C, 超限报警"
+        },
+        {
+          "index": 28704,
+          "subindex": 2,
+          "name": "Actual_Zone2",
+          "description": "温区2实际温度",
+          "data_type": "uint16",
+          "unit": "0.1°C",
+          "business_comment": "温区2实际测温, 允许偏差±10°C"
+        },
+        {
+          "index": 28704,
+          "subindex": 3,
+          "name": "Actual_Zone3",
+          "description": "温区3实际温度",
+          "data_type": "uint16",
+          "unit": "0.1°C",
+          "business_comment": "温区3实际测温, 允许偏差±10°C"
+        },
+        {
+          "index": 28704,
+          "subindex": 4,
+          "name": "Heater_Power_Percent",
+          "description": "加热输出功率",
+          "data_type": "uint8",
+          "unit": "%",
+          "business_comment": "加热模块当前输出功率, 长期100%提示加热器异常"
+        }
+      ]
+    },
+    {
+      "slave_id": 5,
+      "device_name": "Vision-Inspector",
+      "vendor_id": 5,
+      "product_code": 16385,
+      "registers": [
+        {
+          "index": 28672,
+          "subindex": 1,
+          "name": "Inspect_Trigger",
+          "description": "视觉检测触发",
+          "data_type": "bool",
+          "unit": null,
+          "business_comment": "上升沿触发一次视觉检测任务"
+        },
+        {
+          "index": 28672,
+          "subindex": 2,
+          "name": "Recipe_ID",
+          "description": "检测配方编号",
+          "data_type": "uint16",
+          "unit": null,
+          "business_comment": "当前选择的检测配方: 1=PCB-A, 2=PCB-B, 3=外壳装配"
+        },
+        {
+          "index": 28704,
+          "subindex": 1,
+          "name": "Result_OK_NG",
+          "description": "检测结果 0=OK, 1=NG",
+          "data_type": "uint8",
+          "unit": null,
+          "business_comment": "最近一次检测结果: 0合格, 1不合格"
+        },
+        {
+          "index": 28704,
+          "subindex": 2,
+          "name": "NG_Code",
+          "description": "不合格代码",
+          "data_type": "uint16",
+          "unit": null,
+          "business_comment": "不合格原因: 1=缺件, 2=错位, 3=极性反, 4=焊点不良, 5=外观划伤"
+        },
+        {
+          "index": 28704,
+          "subindex": 3,
+          "name": "Score_Confidence",
+          "description": "匹配置信度",
+          "data_type": "uint16",
+          "unit": "0.01%",
+          "business_comment": "算法匹配置信度, 低于 9500 需要人工复检"
+        }
+      ]
+    }
+  ]
+}
